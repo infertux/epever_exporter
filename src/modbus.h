@@ -9,15 +9,16 @@
 #include <threads.h>
 #include <time.h>
 
+#include "epever.h"
 #include "log.h"
 
 enum {
   MAX_DEVICE_ID = 100,
   HOUR = 3600,
+  DAY = 24 * HOUR,
 };
 
-#define TIMEZONE_BIAS (7 * HOURS)
-#define HOURS HOUR
+#define TIMEZONE_BIAS (7L * HOUR)
 
 #define DEBUG FALSE
 
@@ -38,39 +39,6 @@ enum {
 };
 
 #define REGISTER_HALF_SIZE (REGISTER_SIZE / 2)
-
-/* 0x30XX - rated specs */
-#define REGISTER_RATED_INPUT_CURRENT 0x3001
-
-/* 0x31XX - real time data */
-#define REGISTER_PV_VOLTAGE 0x3100
-#define REGISTER_PV_CURRENT 0x3101
-#define REGISTER_PV_POWER 0x3102
-#define REGISTER_BATTERY_VOLTAGE 0x3104
-#define REGISTER_BATTERY_CURRENT 0x3105
-#define REGISTER_BATTERY_POWER 0x3106
-#define REGISTER_BATTERY_TEMPERATURE 0x3110
-#define REGISTER_DEVICE_TEMPERATURE 0x3111
-#define REGISTER_BATTERY_SOC 0x311A
-
-/* 0x32XX - status */
-#define REGISTER_BATTERY_STATUS 0x3200
-#define REGISTER_CHARGING_STATUS 0x3201
-
-/* 0x33XX - stats */
-#define REGISTER_BATTERY_VOLTAGE_MAXIMUM_TODAY 0x3302
-#define REGISTER_BATTERY_VOLTAGE_MINIMUM_TODAY 0x3303
-#define REGISTER_ENERGY_GENERATED_TODAY 0x330C
-#define REGISTER_ENERGY_GENERATED_TOTAL 0x3312
-
-/* 0x90xx - settings */
-#define REGISTER_SETTINGS_CHARGING_LIMIT_VOLTAGE 0x9004
-#define REGISTER_SETTINGS_BOOST_VOLTAGE 0x9007
-#define REGISTER_SETTINGS_FLOAT_VOLTAGE 0x9008
-#define REGISTER_SETTINGS_BOOST_RECONNECT_VOLTAGE 0x9009
-#define REGISTER_SETTINGS_BOOST_DURATION 0x906C
-#define REGISTER_SETTINGS_LENGTH_OF_NIGHT 0x9065
-#define REGISTER_CLOCK 0x9013
 
 enum {
   CLOCK_OFFSET_THRESHOLD = 30, // seconds
@@ -106,77 +74,64 @@ time_t last_time_synced_at[MAX_DEVICE_ID + 1] = {0};
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 time_t last_time_read_settings_at[MAX_DEVICE_ID + 1] = {0};
 
-#define read_input_registers modbus_read_input_registers
-#define read_holding_registers modbus_read_registers
-#define write_holding_registers modbus_write_registers
+#define modbus_read_holding_registers modbus_read_registers
+#define modbus_write_holding_registers modbus_write_registers
 
-int read_input_register(modbus_t *ctx, const int addr, double *value) {
+int read_holding_register_scaled_by(modbus_t *ctx, const int addr, double *value, double scale) {
   uint16_t buffer[1] = {0};
-  int ret = read_input_registers(ctx, addr, 1, buffer);
-  *value = (double)buffer[0];
+  int ret = modbus_read_holding_registers(ctx, addr, 1, buffer);
+  *value = (double)buffer[0] * scale;
 
   return ret;
 }
 
-int read_holding_register(modbus_t *ctx, const int addr, double *value) {
-  uint16_t buffer[1] = {0};
-  int ret = read_holding_registers(ctx, addr, 1, buffer);
-  *value = (double)buffer[0];
+int read_holding_register_double_scaled_by(modbus_t *ctx, const int addr, double *value,
+                                           double scale) {
+  uint16_t buffer[2] = {0, 0};
+  int ret = modbus_read_holding_registers(ctx, addr, 2, buffer);
+  // NOLINTNEXTLINE(hicpp-signed-bitwise)
+  *value = ((double)(buffer[0] << REGISTER_SIZE) + (double)(buffer[1])) * scale;
 
   return ret;
 }
 
 int read_input_register_scaled_by(modbus_t *ctx, const int addr, double *value, double scale) {
-  int ret = read_input_register(ctx, addr, value);
-  *value *= scale;
+  uint16_t buffer[1] = {0};
+  int ret = modbus_read_input_registers(ctx, addr, 1, buffer);
+  *value = (double)buffer[0] * scale;
 
   return ret;
-}
-
-int read_holding_register_scaled_by(modbus_t *ctx, const int addr, double *value, double scale) {
-  int ret = read_holding_register(ctx, addr, value);
-  *value *= scale;
-
-  return ret;
-}
-
-int read_input_register_scaled(modbus_t *ctx, const int addr, double *value) {
-  return read_input_register_scaled_by(ctx, addr, value, 1.0 / 100.0);
-}
-
-int read_holding_register_scaled(modbus_t *ctx, const int addr, double *value) {
-  return read_holding_register_scaled_by(ctx, addr, value, 1.0 / 100.0);
 }
 
 int read_input_register_double_scaled_by(modbus_t *ctx, const int addr, double *value,
                                          double scale) {
   uint16_t buffer[2] = {0, 0};
-  int ret = read_input_registers(ctx, addr, 2, buffer);
-  *value = ((double)(buffer[1] << REGISTER_SIZE) + (double)(buffer[0])) * scale;
+  int ret = modbus_read_input_registers(ctx, addr, 2, buffer);
+  // NOLINTNEXTLINE(hicpp-signed-bitwise)
+  *value = ((double)(buffer[0] << REGISTER_SIZE) + (double)(buffer[1])) * scale;
 
   return ret;
-}
-
-int read_input_register_double_scaled(modbus_t *ctx, const int addr, double *value) {
-  return read_input_register_double_scaled_by(ctx, addr, value, 1.0 / 100.0);
 }
 
 void clock_write(modbus_t *ctx) {
   const time_t now = time(NULL) + TIMEZONE_BIAS + 2; // adding 2 seconds because writing registers
                                                      // is slow so we need to compensate for it
-  const struct tm *tm = gmtime(&now);
+  const struct tm *now_tm = gmtime(&now);
   const uint16_t year_offset = 100;
 
   const uint16_t clock[3] = {
-      ((uint16_t)tm->tm_min << REGISTER_HALF_SIZE) + (uint8_t)tm->tm_sec,
-      ((uint16_t)tm->tm_mday << REGISTER_HALF_SIZE) + (uint8_t)tm->tm_hour,
-      (((uint16_t)tm->tm_year - year_offset) << REGISTER_HALF_SIZE) + (uint8_t)tm->tm_mon + 1,
+      // NOLINTBEGIN(hicpp-signed-bitwise)
+      ((uint16_t)now_tm->tm_min << REGISTER_HALF_SIZE) + (uint8_t)now_tm->tm_sec,
+      ((uint16_t)now_tm->tm_mday << REGISTER_HALF_SIZE) + (uint8_t)now_tm->tm_hour,
+      (((uint16_t)now_tm->tm_year - year_offset) << REGISTER_HALF_SIZE) + (uint8_t)now_tm->tm_mon +
+          1,
+      // NOLINTEND(hicpp-signed-bitwise)
   };
 
   fprintf(LOG_DEBUG, "About to write %04X·%04X·%04X into clock register\n", clock[2], clock[1],
           clock[0]);
 
-  if (3 != write_holding_registers(ctx, REGISTER_CLOCK, 3, clock)) {
+  if (3 != modbus_write_holding_registers(ctx, REGISTER_CLOCK, 3, clock)) {
     fprintf(LOG_ERROR, "Writing clock failed\n");
   } else {
     fprintf(LOG_INFO, "Writing clock succeeded\n");
@@ -185,7 +140,7 @@ void clock_write(modbus_t *ctx) {
 
 int clock_sync(modbus_t *ctx) {
   uint16_t clock[3] = {0, 0, 0};
-  if (-1 == read_holding_registers(ctx, REGISTER_CLOCK, 3, clock)) {
+  if (-1 == modbus_read_holding_registers(ctx, REGISTER_CLOCK, 3, clock)) {
     fprintf(LOG_ERROR, "Reading clock failed\n");
     return INT_MAX;
   }
@@ -194,12 +149,14 @@ int clock_sync(modbus_t *ctx) {
 
   const int year_offset = 100;
   struct tm clock_tm = {
-      (int)(clock[0] & REGISTER_HALF_MASK),           // seconds
+      // NOLINTBEGIN(hicpp-signed-bitwise)
+      (clock[0] & REGISTER_HALF_MASK),                // seconds
       (clock[0] >> REGISTER_HALF_SIZE),               // minutes
-      (int)(clock[1] & REGISTER_HALF_MASK),           // hours
+      (clock[1] & REGISTER_HALF_MASK),                // hours
       (clock[1] >> REGISTER_HALF_SIZE),               // day
-      (int)(clock[2] & REGISTER_HALF_MASK) - 1,       // month
-      (clock[2] >> REGISTER_HALF_SIZE) + year_offset, // year;
+      (clock[2] & REGISTER_HALF_MASK) - 1,            // month
+      (clock[2] >> REGISTER_HALF_SIZE) + year_offset, // year
+                                                      // NOLINTEND(hicpp-signed-bitwise)
   };
   const time_t clock_time_t = mktime(&clock_tm);
   const time_t now = time(NULL) + TIMEZONE_BIAS;
@@ -219,9 +176,9 @@ int clock_sync(modbus_t *ctx) {
     clock_write(ctx);
 
     return (int)difference;
-  } else {
-    fprintf(LOG_INFO, "Device time is %.0lfs ahead\n", difference);
   }
+
+  fprintf(LOG_INFO, "Device time is %.0lfs ahead\n", difference);
 
   return EXIT_SUCCESS;
 }
@@ -239,10 +196,11 @@ int query_device_failed(modbus_t *ctx, const uint8_t device_id, const char *mess
   return (errno ? errno : 9001); // NOLINT: 9001 is an unassigned modbus errno
 }
 
-void read_register_failed(const uint8_t device_id, const char *message) {
+void read_register_failed(const uint8_t device_id, const REGISTER *reg) {
   read_metric_failed_total[device_id]++;
 
-  fprintf(LOG_ERROR, "[Device %" PRIu8 "] Reading register %s failed", device_id, message);
+  fprintf(LOG_ERROR, "[Device %" PRIu8 "] Reading register %" PRIu8 " (%s) failed", device_id,
+          reg->address, reg->human_name);
 
   if (errno) {
     fprintf(LOG_ERROR, ": %s (%d)", modbus_strerror(errno), errno);
@@ -266,13 +224,20 @@ int query_device_thread(void *id_ptr) {
   snprintf(device_id_label, sizeof(device_id_label), "device_id=\"%" PRIu8 "\"", device_id);
 
   modbus_t *ctx = NULL;
-  // XXX: ideally we could use TCP but this always times out for some reason:
-  // ctx = modbus_new_tcp("192.168.1.X", 8088);
-  // ... so we use socat:
-  // socat -ls -v pty,link=/tmp/ttyepever123 tcp:192.168.1.X:8088
-  char path[32];
-  snprintf(path, sizeof(path), "/tmp/ttyepever%" PRIu8, device_id);
-  ctx = modbus_new_rtu(path, MODBUS_BAUD, MODBUS_PARITY, MODBUS_DATA_BIT, MODBUS_STOP_BIT);
+  /* connection options:
+   * 1. use wifi box and TCP but this always times out for me for some reason:
+     ctx = modbus_new_tcp("192.168.1.X", 8088);
+
+     2. use wifi box and a socat wrapper:
+     $ socat -ls -v pty,link=/tmp/ttyepever123 tcp:192.168.1.X:8088
+     char path[32];
+     snprintf(path, sizeof(path), "/tmp/ttyepever%" PRIu8, device_id);
+
+     3. use USB-RS485 cable with this driver:
+     https://github.com/kasbert/epsolar-tracer/tree/master/xr_usb_serial_common-1a
+  */
+  ctx = modbus_new_rtu("/dev/ttyXRUSB0", MODBUS_BAUD, MODBUS_PARITY, MODBUS_DATA_BIT,
+                       MODBUS_STOP_BIT);
   if (ctx == NULL) {
     return query_device_failed(ctx, device_id, "Unable to create the libmodbus context");
   }
@@ -295,7 +260,7 @@ int query_device_thread(void *id_ptr) {
 
   fprintf(LOG_DEBUG, "last_time_synced_at[%" PRIu8 "] = %lf\n", device_id,
           difftime(now, last_time_synced_at[device_id]));
-  if (difftime(now, last_time_synced_at[device_id]) > 24 * HOURS) {
+  if (difftime(now, last_time_synced_at[device_id]) > 1 * DAY) {
     if (clock_sync(ctx)) {
       fprintf(LOG_ERROR, "Synced time\n");
     }
@@ -303,169 +268,10 @@ int query_device_thread(void *id_ptr) {
     last_time_synced_at[device_id] = now;
   }
 
-  double battery_status = 0;
-  if (-1 == read_input_register(ctx, REGISTER_BATTERY_STATUS, &battery_status)) {
-    read_register_failed(device_id, "battery status");
-  } else {
-    add_metric("battery_status", battery_status);
-  }
-
-  double charging_status = 0;
-  if (-1 == read_input_register(ctx, REGISTER_CHARGING_STATUS, &charging_status)) {
-    read_register_failed(device_id, "charging status");
-  } else {
-    add_metric("charging_status", charging_status);
-  }
-
-  double pv_voltage = 0;
-  if (-1 == read_input_register_scaled(ctx, REGISTER_PV_VOLTAGE, &pv_voltage)) {
-    read_register_failed(device_id, "PV voltage");
-  } else {
-    add_metric("pv_volts", pv_voltage);
-  }
-
-  double pv_current = 0;
-  if (-1 == read_input_register_scaled(ctx, REGISTER_PV_CURRENT, &pv_current)) {
-    read_register_failed(device_id, "PV current");
-  } else {
-    add_metric("pv_amperes", pv_current);
-  }
-
-  double pv_power = 0;
-  if (-1 == read_input_register_double_scaled(ctx, REGISTER_PV_POWER, &pv_power)) {
-    read_register_failed(device_id, "PV power");
-  } else {
-    add_metric("pv_watts", pv_power);
-  }
-
-  double battery_voltage_maximum_today = 0;
-  if (-1 == read_input_register_scaled(ctx, REGISTER_BATTERY_VOLTAGE_MAXIMUM_TODAY,
-                                       &battery_voltage_maximum_today)) {
-    read_register_failed(device_id, "battery voltage maximum today");
-  } else {
-    add_metric("battery_voltage_maximum_today_volts", battery_voltage_maximum_today);
-  }
-
-  double battery_voltage_minimum_today = 0;
-  if (-1 == read_input_register_scaled(ctx, REGISTER_BATTERY_VOLTAGE_MINIMUM_TODAY,
-                                       &battery_voltage_minimum_today)) {
-    read_register_failed(device_id, "battery voltage minimum today");
-  } else {
-    add_metric("battery_voltage_minimum_today_volts", battery_voltage_minimum_today);
-  }
-
-  double energy_generated_today = 0;
-  if (-1 == read_input_register_double_scaled_by(
-                ctx, REGISTER_ENERGY_GENERATED_TODAY, &energy_generated_today,
-                // NOLINTNEXTLINE(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
-                1000.0 / 100.0)) {
-    read_register_failed(device_id, "energy generated today");
-  } else {
-    add_metric("energy_generated_today_watthours", energy_generated_today);
-  }
-
-  double energy_generated_total = 0;
-  if (-1 == read_input_register_double_scaled_by(
-                ctx, REGISTER_ENERGY_GENERATED_TOTAL, &energy_generated_total,
-                // NOLINTNEXTLINE(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
-                1000.0 / 100.0)) {
-    read_register_failed(device_id, "energy generated total");
-  } else {
-    add_metric("energy_generated_total_watthours", energy_generated_total);
-  }
-
-  double battery_voltage = 0;
-  if (-1 == read_input_register_scaled(ctx, REGISTER_BATTERY_VOLTAGE, &battery_voltage)) {
-    read_register_failed(device_id, "battery voltage");
-  } else {
-    add_metric("battery_volts", battery_voltage);
-  }
-
-  double battery_current = 0;
-  if (-1 == read_input_register_scaled(ctx, REGISTER_BATTERY_CURRENT, &battery_current)) {
-    read_register_failed(device_id, "battery current");
-  } else {
-    add_metric("battery_amperes", battery_current);
-  }
-
-  double battery_power = 0;
-  if (-1 == read_input_register_double_scaled(ctx, REGISTER_BATTERY_POWER, &battery_power)) {
-    read_register_failed(device_id, "battery power");
-  } else {
-    add_metric("battery_watts", battery_power);
-  }
-
-  double battery_temperature = 0;
-  if (-1 == read_input_register_scaled(ctx, REGISTER_BATTERY_TEMPERATURE, &battery_temperature)) {
-    read_register_failed(device_id, "battery temperature");
-  } else {
-    add_metric("battery_temperature_celsius", battery_temperature);
-  }
-
-  double device_temperature = 0;
-  if (-1 == read_input_register_scaled(ctx, REGISTER_DEVICE_TEMPERATURE, &device_temperature)) {
-    read_register_failed(device_id, "device temperature");
-  } else {
-    add_metric("device_temperature_celsius", device_temperature);
-  }
-
-  double battery_soc = 0;
-  if (-1 == read_input_register_scaled(ctx, REGISTER_BATTERY_SOC, &battery_soc)) {
-    read_register_failed(device_id, "battery SOC");
-  } else {
-    add_metric("battery_soc", battery_soc);
-  }
-
   fprintf(LOG_DEBUG, "last_time_read_settings_at[%" PRIu8 "] = %lf\n", device_id,
           difftime(now, last_time_read_settings_at[device_id]));
   if (difftime(now, last_time_read_settings_at[device_id]) > 1 * HOUR) {
-    double rated_input_current = 0;
-    if (-1 == read_input_register_scaled(ctx, REGISTER_RATED_INPUT_CURRENT, &rated_input_current)) {
-      read_register_failed(device_id, "rated input current");
-    } else {
-      add_metric("rated_input_current", rated_input_current);
-    }
-
-    double charging_limit_voltage = 0;
-    if (-1 == read_holding_register_scaled(ctx, REGISTER_SETTINGS_CHARGING_LIMIT_VOLTAGE,
-                                           &charging_limit_voltage)) {
-      read_register_failed(device_id, "charging limit voltage");
-    } else {
-      add_metric("settings_charging_limit_voltage", charging_limit_voltage);
-    }
-
-    double boost_voltage = 0;
-    if (-1 == read_holding_register_scaled(ctx, REGISTER_SETTINGS_BOOST_VOLTAGE, &boost_voltage)) {
-      read_register_failed(device_id, "boost voltage");
-    } else {
-      add_metric("settings_boost_voltage", boost_voltage);
-    }
-
-    double float_voltage = 0;
-    if (-1 == read_holding_register_scaled(ctx, REGISTER_SETTINGS_FLOAT_VOLTAGE, &float_voltage)) {
-      read_register_failed(device_id, "float voltage");
-    } else {
-      add_metric("settings_float_voltage", float_voltage);
-    }
-
-    double boost_reconnect_voltage = 0;
-    if (-1 == read_holding_register_scaled(ctx, REGISTER_SETTINGS_BOOST_RECONNECT_VOLTAGE,
-                                           &boost_reconnect_voltage)) {
-      read_register_failed(device_id, "boost reconnect voltage");
-    } else {
-      add_metric("settings_boost_voltage", boost_voltage);
-    }
-
-    double boost_duration = 0;
-    if (-1 == read_holding_register_scaled_by(
-                  ctx, REGISTER_SETTINGS_BOOST_DURATION, &boost_duration,
-                  // NOLINTNEXTLINE(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
-                  60.0)) {
-      read_register_failed(device_id, "boost duration");
-    } else {
-      add_metric("settings_boost_duration_seconds", boost_duration);
-    }
-
+    /*
     uint16_t length_of_night_buffer = 0;
     if (-1 == read_holding_registers(ctx, REGISTER_SETTINGS_LENGTH_OF_NIGHT, 1,
                                      &length_of_night_buffer)) {
@@ -476,8 +282,60 @@ int query_device_thread(void *id_ptr) {
       const double length_of_night = hour + (minute / 60.0);
       add_metric("settings_length_of_night_hours", length_of_night);
     }
+    */
+    const uint8_t register_count = sizeof(holding_registers) / sizeof(REGISTER);
+    for (uint8_t index = 0; index < register_count; index++) {
+      const REGISTER reg = holding_registers[index];
+      int ret = -1;
+      double result[] = {0, 0};
 
-    last_time_read_settings_at[device_id] = now; // FIXME
+      switch (reg.register_size) {
+      case REGISTER_SINGLE:
+        ret = read_holding_register_scaled_by(ctx, reg.address, result, reg.scale);
+        break;
+
+      case REGISTER_DOUBLE:
+        ret = read_holding_register_double_scaled_by(ctx, reg.address, result, reg.scale);
+        break;
+
+      default:
+        return query_device_failed(ctx, device_id, "Unexpected register size");
+      }
+
+      if (-1 == ret) {
+        read_register_failed(device_id, &reg);
+      } else {
+        add_metric(reg.metric_name, *result);
+      }
+    }
+
+    last_time_read_settings_at[device_id] = now;
+  }
+
+  const uint8_t register_count = sizeof(input_registers) / sizeof(REGISTER);
+  for (uint8_t index = 0; index < register_count; index++) {
+    const REGISTER reg = input_registers[index];
+    int ret = -1;
+    double result[] = {0, 0};
+
+    switch (reg.register_size) {
+    case REGISTER_SINGLE:
+      ret = read_input_register_scaled_by(ctx, reg.address, result, reg.scale);
+      break;
+
+    case REGISTER_DOUBLE:
+      ret = read_input_register_double_scaled_by(ctx, reg.address, result, reg.scale);
+      break;
+
+    default:
+      return query_device_failed(ctx, device_id, "Unexpected register size");
+    }
+
+    if (-1 == ret) {
+      read_register_failed(device_id, &reg);
+    } else {
+      add_metric(reg.metric_name, *result);
+    }
   }
 
   add_metric("read_metric_failed_total", (double)read_metric_failed_total[device_id]);
