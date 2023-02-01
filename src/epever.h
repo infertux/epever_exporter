@@ -19,7 +19,6 @@ const REGISTER holding_registers[] = {
     {0x9007, "boost charging voltage", "settings_boost_charging_volts", REGISTER_SINGLE, 0.01},
     {0x9008, "float charging voltage", "settings_float_charging_volts", REGISTER_SINGLE, 0.01},
     {0x9009, "boost reconnect voltage", "settings_boost_reconnect_volts", REGISTER_SINGLE, 0.01},
-    {0x9065, "length of night", "settings_length_of_night_seconds", REGISTER_DOUBLE, 3600},
     {0x906C, "boost duration", "settings_boost_duration_seconds", REGISTER_SINGLE, 60},
     // NOLINTEND(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
 };
@@ -50,6 +49,8 @@ const REGISTER input_registers[] = {
     /* 0x33XX - stats */
     {0x3302, "battery min voltage today", "battery_min_today_volts", REGISTER_SINGLE, 0.01},
     {0x3303, "battery max voltage today", "battery_max_today_volts", REGISTER_SINGLE, 0.01},
+    {0x3304, "consumed energy today", "energy_consumed_today_kwh", REGISTER_DOUBLE, 0.01},
+    {0x330A, "consumed energy total", "energy_consumed_total_kwh", REGISTER_DOUBLE, 0.01},
     {0x330C, "PV energy today", "energy_pv_today_kwh", REGISTER_DOUBLE, 0.01},
     {0x3312, "PV energy total", "energy_pv_total_kwh", REGISTER_DOUBLE, 0.01},
     // {0x311B, "battery net current (signed)", "battery_net_amps", REGISTER_DOUBLE, 0.01}, // XXX:

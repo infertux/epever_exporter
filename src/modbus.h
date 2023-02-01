@@ -271,18 +271,6 @@ int query_device_thread(void *id_ptr) {
   fprintf(LOG_DEBUG, "last_time_read_settings_at[%" PRIu8 "] = %lf\n", device_id,
           difftime(now, last_time_read_settings_at[device_id]));
   if (difftime(now, last_time_read_settings_at[device_id]) > 1 * HOUR) {
-    /*
-    uint16_t length_of_night_buffer = 0;
-    if (-1 == read_holding_registers(ctx, REGISTER_SETTINGS_LENGTH_OF_NIGHT, 1,
-                                     &length_of_night_buffer)) {
-      read_register_failed(device_id, "length of night");
-    } else {
-      const double hour = (double)(length_of_night_buffer >> REGISTER_HALF_SIZE);
-      const double minute = (double)(length_of_night_buffer & REGISTER_HALF_MASK);
-      const double length_of_night = hour + (minute / 60.0);
-      add_metric("settings_length_of_night_hours", length_of_night);
-    }
-    */
     const uint8_t register_count = sizeof(holding_registers) / sizeof(REGISTER);
     for (uint8_t index = 0; index < register_count; index++) {
       const REGISTER reg = holding_registers[index];
