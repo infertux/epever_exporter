@@ -90,7 +90,7 @@ int read_holding_register_double_scaled_by(modbus_t *ctx, const int addr, double
   uint16_t buffer[2] = {0, 0};
   int ret = modbus_read_holding_registers(ctx, addr, 2, buffer);
   // NOLINTNEXTLINE(hicpp-signed-bitwise)
-  *value = ((double)(buffer[0] << REGISTER_SIZE) + (double)(buffer[1])) * scale;
+  *value = ((double)(buffer[1] << REGISTER_SIZE) + (double)(buffer[0])) * scale;
 
   return ret;
 }
@@ -108,7 +108,7 @@ int read_input_register_double_scaled_by(modbus_t *ctx, const int addr, double *
   uint16_t buffer[2] = {0, 0};
   int ret = modbus_read_input_registers(ctx, addr, 2, buffer);
   // NOLINTNEXTLINE(hicpp-signed-bitwise)
-  *value = ((double)(buffer[0] << REGISTER_SIZE) + (double)(buffer[1])) * scale;
+  *value = ((double)(buffer[1] << REGISTER_SIZE) + (double)(buffer[0])) * scale;
 
   return ret;
 }

@@ -52,6 +52,7 @@ const REGISTER input_registers[] = {
     {0x3303, "battery max voltage today", "battery_max_today_volts", REGISTER_SINGLE, 0.01},
     {0x330C, "PV energy today", "energy_pv_today_kwh", REGISTER_DOUBLE, 0.01},
     {0x3312, "PV energy total", "energy_pv_total_kwh", REGISTER_DOUBLE, 0.01},
-    {0x311B, "battery net current (signed)", "battery_net_amps", REGISTER_DOUBLE, 0.01},
+    // {0x311B, "battery net current (signed)", "battery_net_amps", REGISTER_DOUBLE, 0.01}, // XXX:
+    // failing with "Illegal data address"
     // NOLINTEND(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
 };
