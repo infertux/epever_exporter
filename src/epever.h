@@ -2,6 +2,10 @@
 
 enum {
   MAX_METRIC_LENGTH = 64,
+  CLOCK_OFFSET_THRESHOLD = 30, // seconds
+  REGISTER_CLOCK_ADDRESS = 0x9013,
+  REGISTER_CLOCK_SIZE = 3,
+  REGISTER_CLOCK_YEAR_OFFSET = 100, // years
 };
 
 typedef struct __attribute__((aligned(MAX_METRIC_LENGTH * 2))) {
@@ -21,10 +25,6 @@ const REGISTER holding_registers[] = {
     {0x9009, "boost reconnect voltage", "settings_boost_reconnect_volts", REGISTER_SINGLE, 0.01},
     {0x906C, "boost duration", "settings_boost_duration_seconds", REGISTER_SINGLE, 60},
     // NOLINTEND(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
-};
-
-enum {
-  REGISTER_CLOCK = 0x9013,
 };
 
 const REGISTER input_registers[] = {

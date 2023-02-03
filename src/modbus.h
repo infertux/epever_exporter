@@ -13,12 +13,12 @@
 #include "log.h"
 
 enum {
-  MAX_DEVICE_ID = 100,
+  MAX_DEVICE_COUNT = 8,
   HOUR = 3600,
   DAY = 24 * HOUR,
 };
 
-#define TIMEZONE_BIAS (7L * HOUR)
+#define TIMEZONE_OFFSET (7L * HOUR)
 
 #define DEBUG FALSE
 
@@ -30,7 +30,7 @@ enum {
   MODBUS_PARITY = 'N',
   MODBUS_DATA_BIT = 8,
   MODBUS_STOP_BIT = 1,
-  MODBUS_RESPONSE_TIMEOUT = 3,
+  MODBUS_RESPONSE_TIMEOUT = 3, // seconds
 };
 
 enum {
@@ -39,10 +39,6 @@ enum {
 };
 
 #define REGISTER_HALF_SIZE (REGISTER_SIZE / 2)
-
-enum {
-  CLOCK_OFFSET_THRESHOLD = 30, // seconds
-};
 
 #define add_metric(name, value)                                                                    \
   do {                                                                                             \
@@ -62,17 +58,17 @@ enum {
   } while (0)
 
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-char device_metrics[MAX_DEVICE_ID + 1][PROMETHEUS_RESPONSE_SIZE * sizeof(char)] = {{'\0'}};
+char device_metrics[MAX_DEVICE_COUNT][PROMETHEUS_RESPONSE_SIZE * sizeof(char)] = {{'\0'}};
 
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-uint8_t read_metric_failed_total[MAX_DEVICE_ID + 1] = {0};
+uint8_t read_metric_failed_total[MAX_DEVICE_COUNT] = {0};
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-uint8_t read_metric_succeeded_total[MAX_DEVICE_ID + 1] = {0};
+uint8_t read_metric_succeeded_total[MAX_DEVICE_COUNT] = {0};
 
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-time_t last_time_synced_at[MAX_DEVICE_ID + 1] = {0};
+time_t last_time_synced_at[MAX_DEVICE_COUNT] = {0};
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-time_t last_time_read_settings_at[MAX_DEVICE_ID + 1] = {0};
+time_t last_time_read_settings_at[MAX_DEVICE_COUNT] = {0};
 
 #define modbus_read_holding_registers modbus_read_registers
 #define modbus_write_holding_registers modbus_write_registers
@@ -87,7 +83,7 @@ int read_holding_register_scaled_by(modbus_t *ctx, const int addr, double *value
 
 int read_holding_register_double_scaled_by(modbus_t *ctx, const int addr, double *value,
                                            double scale) {
-  uint16_t buffer[2] = {0, 0};
+  uint16_t buffer[2] = {0};
   int ret = modbus_read_holding_registers(ctx, addr, 2, buffer);
   // NOLINTNEXTLINE(hicpp-signed-bitwise)
   *value = ((double)(buffer[1] << REGISTER_SIZE) + (double)(buffer[0])) * scale;
@@ -105,7 +101,7 @@ int read_input_register_scaled_by(modbus_t *ctx, const int addr, double *value, 
 
 int read_input_register_double_scaled_by(modbus_t *ctx, const int addr, double *value,
                                          double scale) {
-  uint16_t buffer[2] = {0, 0};
+  uint16_t buffer[2] = {0};
   int ret = modbus_read_input_registers(ctx, addr, 2, buffer);
   // NOLINTNEXTLINE(hicpp-signed-bitwise)
   *value = ((double)(buffer[1] << REGISTER_SIZE) + (double)(buffer[0])) * scale;
@@ -113,25 +109,34 @@ int read_input_register_double_scaled_by(modbus_t *ctx, const int addr, double *
   return ret;
 }
 
-void clock_write(modbus_t *ctx) {
-  const time_t now = time(NULL) + TIMEZONE_BIAS + 2; // adding 2 seconds because writing registers
-                                                     // is slow so we need to compensate for it
-  const struct tm *now_tm = gmtime(&now);
-  const uint16_t year_offset = 100;
+inline void print_register(FILE *stream, const uint16_t *reg, const uint8_t size) {
+  for (int i = 0; i < size - 1; i++) {
+    fprintf(stream, "%04X·", reg[i]);
+  }
+  fprintf(stream, "%04X", reg[size - 1]);
+}
 
-  const uint16_t clock[3] = {
+void clock_write(modbus_t *ctx) {
+  const time_t now = time(NULL) + TIMEZONE_OFFSET + 2; // adding 2 seconds because writing registers
+                                                       // is slow so we need to compensate for it
+  struct tm now_tm;
+  gmtime_r(&now, &now_tm);
+
+  const uint16_t clock[REGISTER_CLOCK_SIZE] = {
       // NOLINTBEGIN(hicpp-signed-bitwise)
-      ((uint16_t)now_tm->tm_min << REGISTER_HALF_SIZE) + (uint8_t)now_tm->tm_sec,
-      ((uint16_t)now_tm->tm_mday << REGISTER_HALF_SIZE) + (uint8_t)now_tm->tm_hour,
-      (((uint16_t)now_tm->tm_year - year_offset) << REGISTER_HALF_SIZE) + (uint8_t)now_tm->tm_mon +
-          1,
+      ((uint16_t)now_tm.tm_min << REGISTER_HALF_SIZE) + (uint8_t)now_tm.tm_sec,
+      ((uint16_t)now_tm.tm_mday << REGISTER_HALF_SIZE) + (uint8_t)now_tm.tm_hour,
+      (((uint16_t)now_tm.tm_year - REGISTER_CLOCK_YEAR_OFFSET) << REGISTER_HALF_SIZE) +
+          (uint8_t)now_tm.tm_mon + 1,
       // NOLINTEND(hicpp-signed-bitwise)
   };
 
-  fprintf(LOG_DEBUG, "About to write %04X·%04X·%04X into clock register\n", clock[2], clock[1],
-          clock[0]);
+  fprintf(LOG_DEBUG, "About to write ");
+  print_register(LOG_DEBUG, clock, REGISTER_CLOCK_SIZE);
+  fprintf(LOG_DEBUG, " into clock register\n");
 
-  if (3 != modbus_write_holding_registers(ctx, REGISTER_CLOCK, 3, clock)) {
+  if (REGISTER_CLOCK_SIZE !=
+      modbus_write_holding_registers(ctx, REGISTER_CLOCK_ADDRESS, REGISTER_CLOCK_SIZE, clock)) {
     fprintf(LOG_ERROR, "Writing clock failed\n");
   } else {
     fprintf(LOG_INFO, "Writing clock succeeded\n");
@@ -139,27 +144,30 @@ void clock_write(modbus_t *ctx) {
 }
 
 int clock_sync(modbus_t *ctx) {
-  uint16_t clock[3] = {0, 0, 0};
-  if (-1 == modbus_read_holding_registers(ctx, REGISTER_CLOCK, 3, clock)) {
+  uint16_t clock[REGISTER_CLOCK_SIZE] = {0};
+  if (-1 ==
+      modbus_read_holding_registers(ctx, REGISTER_CLOCK_ADDRESS, REGISTER_CLOCK_SIZE, clock)) {
     fprintf(LOG_ERROR, "Reading clock failed\n");
     return INT_MAX;
   }
 
-  fprintf(LOG_DEBUG, "Clock register is %04X·%04X·%04X\n", clock[2], clock[1], clock[0]);
+  fprintf(LOG_DEBUG, "Clock register is ");
+  print_register(LOG_DEBUG, clock, REGISTER_CLOCK_SIZE);
+  fprintf(LOG_DEBUG, "\n");
 
-  const int year_offset = 100;
   struct tm clock_tm = {
       // NOLINTBEGIN(hicpp-signed-bitwise)
-      (clock[0] & REGISTER_HALF_MASK),                // seconds
-      (clock[0] >> REGISTER_HALF_SIZE),               // minutes
-      (clock[1] & REGISTER_HALF_MASK),                // hours
-      (clock[1] >> REGISTER_HALF_SIZE),               // day
-      (clock[2] & REGISTER_HALF_MASK) - 1,            // month
-      (clock[2] >> REGISTER_HALF_SIZE) + year_offset, // year
-                                                      // NOLINTEND(hicpp-signed-bitwise)
+      (clock[0] & REGISTER_HALF_MASK),     // seconds
+      (clock[0] >> REGISTER_HALF_SIZE),    // minutes
+      (clock[1] & REGISTER_HALF_MASK),     // hours
+      (clock[1] >> REGISTER_HALF_SIZE),    // day
+      (clock[2] & REGISTER_HALF_MASK) - 1, // month
+      (clock[2] >> REGISTER_HALF_SIZE) +
+          REGISTER_CLOCK_YEAR_OFFSET, // year
+                                      // NOLINTEND(hicpp-signed-bitwise)
   };
   const time_t clock_time_t = mktime(&clock_tm);
-  const time_t now = time(NULL) + TIMEZONE_BIAS;
+  const time_t now = time(NULL) + TIMEZONE_OFFSET;
   const double difference = difftime(clock_time_t, now);
 
   if (fabs(difference) >= CLOCK_OFFSET_THRESHOLD) {
@@ -169,8 +177,9 @@ int clock_sync(modbus_t *ctx) {
     strftime(time_string, sizeof time_string, "%FT%T", &clock_tm);
     fprintf(LOG_ERROR, "device time = %s\n", time_string);
 
-    const struct tm *now_tm = gmtime(&now);
-    strftime(time_string, sizeof time_string, "%FT%T", now_tm);
+    struct tm now_tm;
+    gmtime_r(&now, &now_tm);
+    strftime(time_string, sizeof time_string, "%FT%T", &now_tm);
     fprintf(LOG_ERROR, "        now = %s\n", time_string);
 
     clock_write(ctx);
@@ -220,7 +229,8 @@ int query_device_thread(void *id_ptr) {
   char *dest = device_metrics[device_id];
   *dest = '\0'; // empty buffer content from previous queries
 
-  char device_id_label[32]; // NOLINT: 32 chars should never overflow since MAX_DEVICE_ID is small
+  char
+      device_id_label[32]; // NOLINT: 32 chars should never overflow since MAX_DEVICE_COUNT is small
   snprintf(device_id_label, sizeof(device_id_label), "device_id=\"%" PRIu8 "\"", device_id);
 
   modbus_t *ctx = NULL;
@@ -246,11 +256,13 @@ int query_device_thread(void *id_ptr) {
     return query_device_failed(ctx, device_id, "Set debug flag failed");
   }
 
+  if (modbus_set_response_timeout(ctx, MODBUS_RESPONSE_TIMEOUT, 0)) {
+    return query_device_failed(ctx, device_id, "Set response timeout failed");
+  }
+
   if (modbus_set_slave(ctx, 1)) { // required with RTU mode
     return query_device_failed(ctx, device_id, "Set slave failed");
   }
-
-  modbus_set_response_timeout(ctx, MODBUS_RESPONSE_TIMEOUT, 0); // in seconds
 
   if (modbus_connect(ctx)) {
     return query_device_failed(ctx, device_id, "Connection failed");
@@ -275,7 +287,7 @@ int query_device_thread(void *id_ptr) {
     for (uint8_t index = 0; index < register_count; index++) {
       const REGISTER reg = holding_registers[index];
       int ret = -1;
-      double result[] = {0, 0};
+      double result[2] = {0};
 
       switch (reg.register_size) {
       case REGISTER_SINGLE:
@@ -304,7 +316,7 @@ int query_device_thread(void *id_ptr) {
   for (uint8_t index = 0; index < register_count; index++) {
     const REGISTER reg = input_registers[index];
     int ret = -1;
-    double result[] = {0, 0};
+    double result[2] = {0};
 
     switch (reg.register_size) {
     case REGISTER_SINGLE:
@@ -343,7 +355,7 @@ int query(char *dest, const uint8_t *device_ids) {
     ;
   fprintf(LOG_DEBUG, "Found %d device IDs to query\n", count);
 
-  thrd_t threads[MAX_DEVICE_ID + 1];
+  thrd_t threads[MAX_DEVICE_COUNT];
 
   for (int i = 0; i < count; i++) {
     int status =
