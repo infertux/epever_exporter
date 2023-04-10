@@ -7,7 +7,7 @@ This allows to monitor PV production, battery status, etc. on a nice Grafana int
 ## Build
 
 ```bash
-apt install clang libbsd-dev libmodbus-dev
+apt install clang libbsd-dev libmodbus-dev clang-tidy clang-format
 make epever
 ```
 
