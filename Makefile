@@ -5,7 +5,7 @@ LIBS=$(shell pkg-config --libs libbsd libmodbus) -pthread
 
 SRCS=src/epever.c src/*.h
 
-all: epever lint
+all: epever
 
 epever: $(SRCS)
 	$(CC) $(CFLAGS) $(LIBS) -Wall -Werror -pedantic -O3 -o epever src/epever.c
